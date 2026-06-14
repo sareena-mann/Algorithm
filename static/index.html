@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Algorhythm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Login screen -->
+  <div id="login-screen">
+    <div class="login-bg"></div>
+    <div class="login-card">
+      <div class="logo-mark">⚡</div>
+      <h1>ALGORHYTHM</h1>
+      <p class="tagline">Your AI DJ. Knows your taste.<br>Plays what you didn't know you needed.</p>
+      <button class="btn-spotify" onclick="window.location.href='/login'">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+        Connect with Spotify
+      </button>
+      <p class="note">Requires Spotify Premium for playback control</p>
+    </div>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" style="display:none">
+    <header>
+      <div class="header-logo">
+        <span class="logo-bolt">⚡</span>
+        <span class="logo-text">ALGORHYTHM</span>
+      </div>
+      <div id="user-badge" class="user-badge"></div>
+    </header>
+
+    <main class="panels">
+
+      <!-- ── Left: Player + Waveform ── -->
+      <section class="panel" id="panel-player">
+        <div class="section-label">NOW PLAYING</div>
+
+        <!-- Track header -->
+        <div class="np-header">
+          <div id="np-art" class="np-art"></div>
+          <div class="np-meta">
+            <div class="now-track" id="now-track">Waiting for a set…</div>
+            <div class="now-artist" id="now-artist"></div>
+            <div class="now-device" id="now-device"></div>
+          </div>
+        </div>
+
+        <!-- CDJ zoom waveform -->
+        <div class="wf-label">ZOOM</div>
+        <div class="wf-wrap">
+          <canvas id="wf-zoom"></canvas>
+          <div class="wf-center-line"></div>
+        </div>
+
+        <!-- CDJ overview waveform -->
+        <div class="wf-label">OVERVIEW</div>
+        <div class="wf-wrap wf-wrap-sm">
+          <canvas id="wf-overview"></canvas>
+        </div>
+
+        <!-- Beat readout -->
+        <div class="beat-readout">
+          <div class="beat-block">
+            <span class="beat-val" id="bpm-val">--</span>
+            <span class="beat-unit">BPM</span>
+          </div>
+          <div class="beat-sep">·</div>
+          <div class="beat-block">
+            <span class="beat-val camelot-val" id="key-val">--</span>
+            <span class="beat-unit">KEY</span>
+          </div>
+          <div class="beat-sep">·</div>
+          <div class="beat-block">
+            <span class="beat-val source-val" id="source-val">--</span>
+            <span class="beat-unit">SRC</span>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <div class="progress-wrap">
+          <span class="time" id="time-cur">0:00</span>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <span class="time" id="time-dur">0:00</span>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button class="ctrl-btn" onclick="control('prev')">⏮</button>
+          <button class="ctrl-btn ctrl-main" id="play-btn" onclick="togglePlay()">▶</button>
+          <button class="ctrl-btn" onclick="control('next')">⏭</button>
+        </div>
+      </section>
+
+      <!-- ── Middle: Set list ── -->
+      <section class="panel" id="panel-set">
+        <div class="section-label">CURRENT SET <span id="set-meta"></span></div>
+        <div id="set-name-display" class="set-name"></div>
+        <div id="set-list" class="set-list">
+          <div class="empty-state">
+            <div class="empty-icon">🎛</div>
+            <div>Tell your DJ what you want →</div>
+          </div>
+        </div>
+        <div id="set-actions" style="display:none" class="set-actions">
+          <button class="btn-drop" id="drop-btn" onclick="dropSet()">
+            <span>▶ DROP THE SET</span>
+          </button>
+          <div class="drop-note">Plays on your active Spotify device</div>
+        </div>
+      </section>
+
+      <!-- ── Right: Chat ── -->
+      <section class="panel" id="panel-chat">
+        <div class="section-label">YOUR DJ</div>
+        <div id="chat-messages" class="chat-messages">
+          <div class="dj-message">
+            <div class="dj-avatar">⚡</div>
+            <div class="dj-bubble">
+              What's the vibe tonight? Tell me anything — a mood, a moment, an energy. I'll build the perfect set.
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-wrap">
+          <input
+            id="vibe-input"
+            class="vibe-input"
+            type="text"
+            placeholder="chill Sunday morning, need focus, hype me up..."
+            onkeydown="handleKey(event)"
+          >
+          <button class="btn-send" id="send-btn" onclick="sendVibe()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </section>
+
+    </main>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
