@@ -1,0 +1,450 @@
+DIFFUSION TRANSFORMER (DiT) — DEEP ARCHITECTURE WALKTHROUGH
+=============================================================
+File: arch/dit.py
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1: WHAT THE MODEL IS TRYING TO DO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The DiT is a noise predictor. It is never asked to "create music."
+It is only ever asked one question:
+
+  "Given this noisy bridge, these two context windows, and this noise level —
+   what is the noise component buried inside the bridge?"
+
+That's it. All the creativity and musical coherence emerges from training that
+single skill 20,000+ times across diverse transitions.
+
+During inference, you start with pure random noise and chip away at it step by step.
+After 1000 steps of "remove a little noise, remove a little more," what remains is
+a coherent bridge that flows from Track A into Track B.
+
+This technique is called Denoising Diffusion Probabilistic Modeling (DDPM).
+The exact same family of models powers Stable Diffusion, DALL-E 3, and Suno.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2: THE NOISE SCHEDULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Constants:
+  T_STEPS = 1000   — the total number of noise levels
+  ALPHA_BAR        — a tensor of 1000 values, one per timestep
+  ALPHA            — the per-step noise multiplier derived from ALPHA_BAR
+
+The schedule is computed by _cosine_alphas():
+
+  f(t) = cos( ((t/T) + 0.008) / 1.008 × π/2 )²
+
+  alpha_bar[t] = f(t) / f(0)
+
+alpha_bar[t] is the fraction of the signal that remains at timestep t.
+At t=0:   alpha_bar ≈ 1.0  → almost no noise, signal mostly intact
+At t=999: alpha_bar ≈ 0.0  → pure noise, signal completely destroyed
+
+Why cosine instead of linear?
+  A linear schedule adds noise at a constant rate. A cosine schedule adds noise
+  slowly at first (preserving fine musical detail longer), then accelerates,
+  then slows again at the very end. This gives the model more gradient signal on
+  the subtle structure of real music — the attack of a kick drum, the tail of a
+  reverb — rather than spending most of its time on coarse structure.
+  The 0.008 offset prevents the schedule from hitting exactly 0 or 1, which
+  causes numerical instability in log space.
+
+These tensors are computed once at module load time and stored as globals
+(ALPHA_BAR, ALPHA) so they don't get recomputed every forward pass.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3: SINUSOIDAL EMBEDDING (SinusoidalEmb)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Input:  t — a batch of integers, shape (B,), values in [0, 999]
+  Output: shape (B, model_dim)
+
+The model needs to know what noise level it's operating at. But a raw integer
+like "437" is meaningless to a neural network — it has no geometric relationship
+to "438" unless you encode it carefully.
+
+Sinusoidal embedding encodes each integer as a point in a high-dimensional
+space where nearby integers are nearby vectors:
+
+  Step 1: Create dim/2 frequencies, logarithmically spaced from 1 to 10000.
+          freqs[i] = exp( -log(10000) × i / (dim/2 - 1) )
+          Low-index freqs are high-frequency (change fast across timesteps).
+          High-index freqs are low-frequency (change slowly across timesteps).
+
+  Step 2: For each element in the batch, multiply t by each frequency:
+          emb[b, i] = t[b] × freqs[i]
+
+  Step 3: Concatenate sine and cosine of those products:
+          output[b] = [sin(emb[b,0]), ..., sin(emb[b,dim/2-1]),
+                       cos(emb[b,0]), ..., cos(emb[b,dim/2-1])]
+
+This is the same encoding used in the original Transformer paper for positional
+embeddings. The key property: the model can compute the relationship between
+any two timesteps from their embeddings alone, without ever having to memorize
+specific integer values.
+
+After SinusoidalEmb, two linear layers with SiLU activation expand and refine
+the embedding into a full model_dim=512 vector. This final vector is what gets
+added to the conditioning.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4: ADAPTIVE LAYER NORM (AdaLN)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Input:  x    — the token sequence, shape (B, T, model_dim)
+          cond — the combined conditioning vector, shape (B, model_dim)
+  Output: shape (B, T, model_dim)
+
+This is the most important innovation in the DiT architecture. In a standard
+transformer, Layer Norm just normalizes each token's values to zero mean and
+unit variance — it has no awareness of external information. AdaLN goes further:
+it uses the conditioning vector to dynamically shift and scale every token after
+normalization.
+
+Step by step:
+
+  Step 1: Normalize x with standard LayerNorm, but with elementwise_affine=False.
+          This means the norm has no learnable gamma/beta — those are replaced by
+          the adaptive parameters in the next step.
+          After this: each token has mean=0, std=1 across the model_dim dimension.
+
+  Step 2: Project the conditioning vector through a single Linear layer:
+            proj(cond) → shape (B, 2 × model_dim)
+          Split this into two halves:
+            scale: (B, model_dim)
+            shift: (B, model_dim)
+
+  Step 3: Apply to the normalized tokens:
+            output = normalized_x × (1 + scale) + shift
+          The unsqueeze makes scale and shift broadcast across the T dimension,
+          so every token in the sequence gets the same adaptive transformation.
+
+Why this matters for the DJ transition task:
+  At timestep t=999 (almost pure noise), the conditioning should tell every layer
+  "be aggressive, make big corrections." At t=10 (nearly clean audio), the
+  conditioning should say "be careful, make tiny refinements." AdaLN is how
+  that timestep-dependent behavior gets communicated — not just at the input,
+  but inside every single transformer block. The model at every depth simultaneously
+  knows how noisy the signal is and what kind of transition it's building.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5: DiTBLOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+One DiTBlock is a single transformer layer. The model stacks 12 of them.
+Each block has two sub-layers: self-attention and a feedforward network.
+Both use AdaLN for normalization (pre-norm style, meaning normalize before
+computing attention/feedforward, not after).
+
+  Input:  x    — token sequence, shape (B, T_total, model_dim)
+          cond — conditioning vector, shape (B, model_dim)
+  Output: shape (B, T_total, model_dim)  [same shape — residual architecture]
+
+SUB-LAYER 1: Self-Attention
+
+  h = attn_norm(x, cond)       — AdaLN: normalize and condition
+  h, _ = attn(h, h, h)         — MultiheadAttention with 8 heads
+  x = x + h                    — residual connection
+
+  The three h arguments to attn() are Query, Key, and Value — all the same
+  tensor (self-attention). Every token in the sequence computes attention scores
+  against every other token. This is what allows a bridge token at position 200
+  to "look at" context_A tokens at positions 0-1290 and context_B tokens at
+  positions 1550-2160. The full cross-window attention is what forces the bridge
+  to be musically coherent with both tracks simultaneously.
+
+  With 8 heads, the attention is split into 8 parallel subspaces of 64 dimensions
+  each (512 / 8 = 64). Each head can specialize: one head might learn to track
+  harmonic relationships (key), another might track rhythmic structure (BPM),
+  another might track energy envelope.
+
+  Residual connection: the output is added back to the original x. This means
+  if the attention sub-layer learns nothing useful, it can output zero and the
+  block passes x through unchanged. This prevents early training instability.
+
+SUB-LAYER 2: Feedforward Network
+
+  x = x + ff(ff_norm(x, cond))
+
+  The feedforward is a two-layer MLP applied independently to each token:
+    Linear(512 → 2048) → GELU → Dropout(0.1) → Linear(2048 → 512)
+
+  The 4× expansion (512 → 2048) is standard transformer design. The wider
+  intermediate layer gives the network capacity to compute complex non-linear
+  transformations per token. GELU is preferred over ReLU in transformers because
+  its smooth gradient near zero helps optimization.
+
+  Dropout(0.1) randomly zeros 10% of neurons during training, which prevents
+  the network from memorizing specific training examples and forces it to learn
+  more general musical patterns.
+
+  Another residual connection wraps the feedforward. Both residuals together mean
+  gradient flows cleanly from the output all the way back to the input during
+  backpropagation, making training of 12+ layer networks feasible.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6: THE FULL MODEL — TransitionDiT.forward()
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is the entire forward pass, step by step.
+
+INPUT TENSORS:
+  context_a    : (B, T_a,      64)   latents from end of Track A
+  noisy_bridge : (B, T_bridge, 64)   clean bridge + added noise
+  context_b    : (B, T_b,      64)   latents from start of Track B
+  timestep     : (B,)                integer noise level per example
+  conditioning : (B, 28)             BPM/key/genre vector
+
+  T_a      ≈ 1290 tokens (15 seconds × 86 tokens/sec)
+  T_bridge ≈  344–860 tokens (4–10 seconds × 86 tokens/sec)
+  T_b      ≈  860 tokens (10 seconds × 86 tokens/sec)
+
+STEP 1: Project latents from codec dimension to model dimension
+
+  a  = in_proj(context_a)    # Linear(64 → 512):  (B, T_a,      512)
+  br = in_proj(noisy_bridge) # Linear(64 → 512):  (B, T_bridge, 512)
+  b  = in_proj(context_b)    # Linear(64 → 512):  (B, T_b,      512)
+
+  The codec latents are 64-dimensional. The transformer needs 512-dimensional
+  tokens to have enough capacity for 8-head attention. This linear projection
+  is a learned dimension expansion — the model learns which directions in the
+  512-dim space are most useful for each latent feature.
+
+STEP 2: Add segment embeddings
+
+  a  += seg_embed(0)   — tells every context_A token "you are from Track A"
+  br += seg_embed(1)   — tells every bridge token "you are the transition"
+  b  += seg_embed(2)   — tells every context_B token "you are from Track B"
+
+  seg_embed is an nn.Embedding(3, 512) — a lookup table with three rows.
+  These are learned during training. Without segment embeddings, the model
+  cannot distinguish whether position 500 is a late context_A token or an
+  early bridge token. With them, every token carries a permanent "identity tag"
+  that persists through all 12 transformer layers.
+
+  This is especially critical during inference: the model must know which tokens
+  it is being asked to denoise (the bridge) vs. which tokens are ground truth
+  anchors (the contexts). The attention mechanism can then learn to use context
+  tokens as reference and bridge tokens as output targets.
+
+STEP 3: Concatenate into one sequence
+
+  seq = cat([a, br, b], dim=1)  # (B, T_a + T_bridge + T_b, 512)
+
+  This is the full input to the transformer. All tokens — from Track A, the
+  bridge, and Track B — are packed into a single flat sequence. The transformer's
+  self-attention has O(T²) complexity, so every token attends to every other.
+  A bridge token at position T_a + 50 can attend to a context_A token at
+  position 10 AND a context_B token at position T_a + T_bridge + 200.
+  This global attention is what makes the bridge musically coherent at both ends.
+
+STEP 4: Build the conditioning vector
+
+  cond = t_embed(timestep) + c_embed(conditioning)  # (B, 512)
+
+  t_embed processes the diffusion timestep through SinusoidalEmb + 2 linear layers.
+  c_embed processes the 28-dim BPM/key/genre vector through 2 linear layers.
+  They are simply added together into one 512-dim vector.
+
+  This combined vector is what gets passed to every AdaLN in every DiTBlock.
+  The model simultaneously knows: "I am denoising at level 437, building a
+  transition from 124 BPM house (8A) to 128 BPM techno (9A)."
+
+STEP 5: Pass through 12 DiTBlocks
+
+  for block in blocks:
+      seq = block(seq, cond)
+
+  Each block: AdaLN → 8-head self-attention → residual → AdaLN → FFN → residual.
+  The conditioning is injected fresh into every AdaLN in every block.
+  After 12 layers, every token has been refined 12 times with full knowledge
+  of the global context (all other tokens) and the conditioning (noise level,
+  BPM, key, genre).
+
+  The first few layers tend to learn local structure (a token attends strongly
+  to its neighbors). The middle layers learn medium-range relationships (beat
+  alignment across a few seconds). The later layers learn global structure
+  (the energy arc of the entire transition).
+
+STEP 6: Extract the bridge slice and project back to latent dim
+
+  out = out_norm(seq[:, T_a : T_a + T_bridge, :])   # (B, T_bridge, 512)
+  return out_proj(out)                                # (B, T_bridge, 64)
+
+  The transformer outputs a refined representation for all tokens. We only
+  care about the bridge slice — context_A and context_B are anchors, not outputs.
+  A final LayerNorm stabilizes the values, then a linear layer projects back
+  down from 512 to 64 (the codec latent dimension).
+
+  The result is the predicted noise — what the model thinks was added to the
+  clean bridge to produce the noisy bridge it was given.
+
+ZERO INITIALIZATION OF out_proj:
+  Both the weight matrix and bias of the final linear layer are initialized to
+  zero. This means at the very start of training, before any learning has
+  happened, the model predicts zero noise for every input. This is beneficial
+  because the loss at initialization is then just the variance of the target
+  (the actual noise), rather than an arbitrarily large random prediction.
+  The model starts from a known, stable baseline and improves from there.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7: add_noise() — FORWARD DIFFUSION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Used during training only.
+
+  Input:  x0 — clean bridge latents, shape (B, T_bridge, 64)
+          t  — random timesteps, shape (B,), values in [0, 999]
+  Output: (x_t, epsilon) — the noisy version and the noise that was added
+
+The forward diffusion equation is:
+
+  x_t = sqrt(alpha_bar[t]) × x0  +  sqrt(1 - alpha_bar[t]) × epsilon
+
+  where epsilon ~ N(0, I)  (standard Gaussian noise)
+
+This is a convex combination of the clean signal and pure noise.
+At t=0:   sqrt(alpha_bar) ≈ 1.0, so x_t ≈ x0        (almost clean)
+At t=999: sqrt(alpha_bar) ≈ 0.0, so x_t ≈ epsilon    (almost pure noise)
+
+The "while alpha_bar.dim() < x0.dim()" loop adds dimensions to alpha_bar
+so it broadcasts correctly against the (B, T, D) shape of x0. This is a
+standard PyTorch pattern for applying per-batch scalars to batched tensors.
+
+After add_noise(), training does:
+  loss = MSE(model(x_t, context_a, context_b, t, cond), epsilon)
+
+The model is trained to recover epsilon from x_t. Because we kept epsilon
+around, we can compute this loss exactly — no approximations needed.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8: ddpm_sample() — INFERENCE / GENERATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Used during inference only. No gradients computed (@torch.no_grad()).
+
+  Input:  model        — the trained TransitionDiT
+          context_a    — latents of Track A's ending (1, T_a, 64)
+          context_b    — latents of Track B's beginning (1, T_b, 64)
+          conditioning — BPM/key/genre vector (1, 28)
+          bridge_len   — number of bridge tokens to generate
+  Output: bridge latents (1, bridge_len, 64)
+
+Step 1: Initialize with pure noise.
+  x = torch.randn(1, bridge_len, 64)
+  This is the starting point: a completely random, meaningless signal.
+
+Step 2: Iterate from t=999 down to t=0.
+  For each timestep t:
+
+  a) Ask the model to predict the noise:
+       eps_pred = model(context_a, x, context_b, t, conditioning)
+
+  b) Use eps_pred to estimate what the clean bridge would look like right now:
+       x0_pred = (x - sqrt(1-alpha_bar[t]) × eps_pred) / sqrt(alpha_bar[t])
+     This is an algebraic rearrangement of the forward diffusion equation.
+     x0_pred is a rough estimate — at high noise levels it's very inaccurate,
+     but it gets better with every denoising step.
+     Clamping to [-4, 4] prevents numerical blow-up in early steps when the
+     model's estimates are unreliable.
+
+  c) Compute the posterior mean for x at the previous timestep (t-1):
+       mean = (sqrt(alpha[t]) × alpha_bar[t-1]) / (1 - alpha_bar[t]) × x
+            + (sqrt(1 - alpha_bar[t-1]) × (1 - alpha[t])) / (1 - alpha_bar[t]) × x0_pred
+     This is the DDPM reverse step formula. It combines the current noisy x
+     with the rough clean estimate x0_pred, weighted by how much signal vs.
+     noise is expected at each timestep.
+
+  d) Add a small amount of fresh Gaussian noise (for all steps except the last):
+       variance = (1 - alpha_bar[t-1]) / (1 - alpha_bar[t]) × (1 - alpha[t])
+       x = mean + sqrt(variance) × randn_like(x)
+     Adding noise at each step (except the final) is what makes DDPM stochastic —
+     two inference runs from different random seeds produce different but equally
+     valid bridges. This mirrors the diversity of human DJ transitions.
+     At t=0, no noise is added — the final output is the deterministic mean.
+
+After 1000 iterations, x has been transformed from pure noise into coherent
+bridge latents that are conditioned on both context tracks and the BPM/key/genre
+vector. These get passed to codec.decode() to produce the final audio.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9: PARAMETER COUNT AND CAPACITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+With the default configuration (model_dim=512, n_heads=8, n_layers=12):
+
+  in_proj:         64 × 512                        =    32,768
+  seg_embed:       3 × 512                         =     1,536
+  t_embed:         512² + 512×2048 + 2048×512      = 2,359,296  (approx)
+  c_embed:         28×512 + 512×512                =   276,992
+  12 × DiTBlock:
+    AdaLN proj:    2 × (512 × 1024)                = 1,048,576  each block
+    Attention QKV: 3 × 512 × 512                   =   786,432  each block
+    Attention out: 512 × 512                       =   262,144  each block
+    FFN:           512×2048 + 2048×512             = 2,097,152  each block
+    Total per block:                               ≈ 4,194,304
+  12 blocks:                                       ≈50,331,648
+  out_norm + out_proj:                             ≈   263,168
+
+  TOTAL: approximately 53 million parameters
+
+For comparison: GPT-2 small is 117M. This model is intentionally compact —
+it only generates 4–10 seconds of audio, not paragraphs of text. 53M parameters
+is enough capacity to learn DJ transition structure while still being trainable
+on a MacBook M-series chip in reasonable time.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 10: DATA FLOW DIAGRAM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TRAINING:
+                    clean bridge (B, T_br, 64)
+                           │
+              random t ──► add_noise()
+                           │
+                    noisy bridge (B, T_br, 64)
+                           │
+  context_a (B,T_a,64) ──►│◄── context_b (B,T_b,64)
+  timestep (B,)       ──►│
+  conditioning (B,28) ──►│
+                           │
+                    TransitionDiT.forward()
+                           │
+                    eps_predicted (B, T_br, 64)
+                           │
+                    MSE vs. actual epsilon
+                           │
+                        loss.backward()
+
+
+INFERENCE:
+  pure noise (1, bridge_len, 64)
+           │
+           │  ×1000 iterations (t=999 → 0):
+           │
+           │   context_a ──►│
+           │   context_b ──►│◄── TransitionDiT
+           │   t        ──►│
+           │   cond     ──►│
+           │        eps_pred
+           │           │
+           │     DDPM reverse step
+           │           │
+           └───────────┘ (x gets cleaner each step)
+           │
+    clean bridge latents (1, bridge_len, 64)
+           │
+      codec.decode()
+           │
+    bridge audio (1, 1, T_samples)
