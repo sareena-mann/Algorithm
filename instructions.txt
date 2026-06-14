@@ -1,0 +1,109 @@
+ALGORHYTHM — TRANSITION RECORDING INSTRUCTIONS
+===============================================
+Thank you for helping build the Algorhythm DJ transition dataset.
+This document explains everything you need to know.
+
+
+WHAT YOU HAVE BEEN GIVEN
+-------------------------
+
+1. clean_tracks.txt
+   A numbered list of all 2,208 songs available to use.
+   Each line looks like:
+
+     0001  |  Song Title  —  Artist Name  [Genre]
+
+   The 4-digit number at the start is the Track ID. You will use
+   these IDs when naming your output files (see below).
+
+2. clean_tracks.csv
+   The full metadata spreadsheet for the same 2,208 songs.
+   Each row contains: Track ID, title, artist name, genre, and license.
+   Use this as a reference if you need more detail about a specific song.
+
+3. The clean_tracks/ folder
+   Contains the 2,208 MP3 files, named by Track ID.
+   Example: Track ID 0001 → file is 0001.mp3
+            Track ID 0023 → file is 0023.mp3
+
+   To find a song: look up its Track ID in clean_tracks.txt,
+   then open the matching .mp3 file from the clean_tracks/ folder.
+
+
+WHAT A TRANSITION IS
+--------------------
+A transition is a seamless mix from the end of one song (Track A)
+into the beginning of another song (Track B), recorded as a single
+audio file in this exact format:
+
+  [← 15 seconds of Track A →][← your DJ bridge →][← 10 seconds of Track B →]
+
+  - Track A section:  the LAST 15 seconds of Track A
+  - Bridge:           your live DJ transition (mixing, EQ, effects, crossfade)
+                      this can be anywhere from 4 to 10 seconds long
+  - Track B section:  the FIRST 10 seconds of Track B
+
+The entire recording should be one continuous WAV file with no gaps,
+cuts, or silence between the three sections.
+
+
+HOW TO RECORD A TRANSITION
+---------------------------
+1. Pick two songs from clean_tracks.txt — note both Track IDs.
+2. Load Track A into your DJ software and cue to the last 15 seconds.
+3. Load Track B into your DJ software and cue to the beginning.
+4. Start recording your audio output.
+5. Play the last 15 seconds of Track A.
+6. Perform your transition (mix, blend, EQ sweep, filter — whatever feels right).
+   Keep the bridge between 4 and 10 seconds.
+7. Let Track B play for 10 seconds after the transition.
+8. Stop recording.
+9. Export as a WAV file (44100 Hz, mono or stereo — either is fine).
+
+
+HOW TO NAME YOUR OUTPUT FILE
+-----------------------------
+Name each file using both Track IDs in this format:
+
+  trackA[ID]trackB[ID].mp3
+
+Examples:
+  Track A = 0001, Track B = 0023  →  trackA0001trackB0023.mp3
+  Track A = 0145, Track B = 0872  →  trackA0145trackB0872.mp3
+
+Always use the full 4-digit Track ID with leading zeros.
+Save all output files in the same folder.
+
+
+LOGGING COMPLETED TRANSITIONS
+------------------------------
+Every time you finish a transition, add a row to the shared spreadsheet
+called "completed transitions" with the following columns:
+
+  | File Name                   | Track A ID | Track A Title | Track A BPM | Track A Key | Track B ID | Track B Title | Track B BPM | Track B Key | Notes |
+  |-----------------------------|------------|---------------|-------------|-------------|------------|---------------|-------------|-------------|-------|
+  | trackA0001trackB0023.mp3    | 0001       | Song Title    | 120         | 8A          | 0023       | Song Title    | 124         | 9A          |       |
+
+BPM and Key are optional — fill them in if you know them or can detect
+them from your DJ software. If unsure, leave the column blank.
+Key should be in Camelot notation (e.g. 8A, 9B) if known.
+
+Fill in the Notes column with anything relevant: tempo match quality,
+key compatibility, whether the mix felt natural, etc.
+
+Please log every transition as you go — do not batch log at the end.
+
+
+TIPS FOR GOOD TRANSITIONS
+--------------------------
+- Transitions between songs of similar BPM will sound the most natural.
+- Songs in the same or adjacent genre tend to mix well together.
+- Avoid abrupt volume changes at the seams — the 15-second and 10-second
+  sections should feel like a continuous listen, not a cut.
+- The bridge does not need to be perfect — natural DJ feel is the goal.
+
+
+QUESTIONS?
+----------
+If anything is unclear or you run into issues with the audio files,
+reach out before recording so we can sort it out.
